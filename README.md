@@ -1,88 +1,95 @@
-# A Jornada dos Dados
+# A Jornada dos Dados: A Carga dos Clientes
 
-<div align="left">
- <p>
- 💡 &nbsp; <b>Cenário: ETL de Clientes</b>
- </p>
-<img align="right" alt="Coding" width="400" src="https://github.com/JosiTubaroski/Pipeline_Airflow/blob/main/Airflow_ETL_20240902.png">
+[← Voltar a Engenharia de Dados](https://github.com/joycequoos/Data_Enginer/blob/main/README.md)
 
-<p>
-Imagine que você faz parte de uma força-tarefa de inteligência financeira, responsável por proteger o sistema contra atividades suspeitas de lavagem de dinheiro.  
+Pipeline de ETL construído com Apache Airflow para a carga diária de dados de clientes: leitura de arquivos `.csv`, carga em tabelas temporárias no SQL Server e tratamento final via Stored Procedure.
 
 
-</p>
-<p>
-Todos os dias, um grande volume de dados de clientes é gerado e precisa ser processado, transformado, e analisado cuidadosamente para garantir a segurança do sistema financeiro.
-</p>
-<p>
-Para isso, você precisa criar uma pipeline de dados para a Carga de Clientes, onde são capturadas todas as informações da Origem e transportada para uma base Destino onde a análise de dados será posteriormente aplicada.
-</p>
-<p>
-Nesse cenários especifico, vamos realizar a leitura de um arquivo .csv que é disponibilizado em um diretorio no servidor diariamente, transportar e tratar os dados no SQL Server. 
-</p>
+  <a href="https://github.com/joycequoos/Pipeline_Airflow/blob/main/Airflow_ETL_20240902.png">
+    <img src="https://github.com/joycequoos/Pipeline_Airflow/raw/main/Airflow_ETL_20240902.png" width="300" alt="DAG do pipeline de carga de clientes">
+  </a>
 
 
-<br>
-<br>
-</div> 
+## Índice
 
-#
+- [Cenário](#cenário)
+- [Fluxo da DAG](#fluxo-da-dag)
+- [Etapas da DAG](#etapas-da-dag)
+- [Arquivos do repositório](#arquivos-do-repositório)
+- [Próximos passos](#próximos-passos)
 
+---
 
+## Cenário
 
+💡 Imagine fazer parte de uma força-tarefa de inteligência financeira, responsável por proteger o sistema contra atividades suspeitas de lavagem de dinheiro. Todos os dias, um grande volume de dados de clientes é gerado e precisa ser processado, transformado e analisado com cuidado para garantir a segurança do sistema financeiro.
 
+Para isso, esta pipeline realiza a **Carga de Clientes**: captura as informações na origem e as transporta até uma base de destino, onde a análise de dados poderá ser aplicada posteriormente. Neste cenário específico, a DAG lê arquivos `.csv` disponibilizados diariamente em um diretório do servidor, transporta e trata os dados no SQL Server.
 
- 
+## Fluxo da DAG
 
-## 💡 Atividades da DAG:
+A DAG `LOAD_CLIENTE` roda todos os dias às 15h e processa dois arquivos em sequência — **Clientes** e **Detalhes de Clientes** — antes de acionar a procedure final de tratamento:
 
+```mermaid
+flowchart TD
+    A["Ler_Nome_Data_Arq_Clientes<br/>(PythonOperator)"] --> B["Limpa_Tabela_Temporaria<br/>(MsSqlOperator)"]
+    B --> C["Ler_Arquivo_CSV_Clientes<br/>(PythonOperator)"]
+    C --> D["Inserir_Tabela_Temporaria_Clientes<br/>(MsSqlOperator)"]
+    D --> E["Ler_Nome_Data_Arq_Detalhes_Cli<br/>(PythonOperator)"]
+    E --> F["Limpar_Tabela_Temporaria_Detal_Cliente<br/>(MsSqlOperator)"]
+    F --> G["Ler_Arquivo_CSV_Detal_Cliente<br/>(PythonOperator)"]
+    G --> H["Inserir_Tabela_Temporaria_Detal_Cliente<br/>(MsSqlOperator)"]
+    H --> I["executar_procedure<br/>(MsSqlOperator → spcl_carga_clientes)"]
+```
 
-### 1. Coleta de Dados: 
-Armazenar o Nome e a Data do arquivo que sera lido para a carga de Clientes.
+| Item | Valor |
+| --- | --- |
+| **Nome da DAG** | `LOAD_CLIENTE` |
+| **Agendamento** | `0 15 * * *` — todos os dias às 15h |
+| **Catchup** | Desativado (`catchup=False`), evitando execuções retroativas |
+| **Tags** | `Cambio`, `Clientes`, `Sircoi` |
+| **Conexão** | `sqlserver` (via `MsSqlHook` / `MsSqlOperator`) |
 
-### 2. Coleta de Dados: 
-Nesse etapa é realizada a limpeza da tabela temporaria que receberá todos os dados do arquivo de Clientes.
-Essa tabela está preparada apenas para receber os dados do Modo que estiverem na origem.
+## Etapas da DAG
 
-### 3. Transferencia dos dados: 
-Nessa etapa é realizada a leitura dos dados de acordo com o nome definido na etapa 1.
+### Bloco 1 — Clientes
 
-### 4.  Transferencia dos dados: 
-Os dados são inseridos na tabela temporaria do banco de dados SQL Server.
+| # | Task | O que faz |
+| --- | --- | --- |
+| 1 | `Ler_Nome_Data_Arq_Clientes` | Consulta a tabela `dbo.tsv_server_status` para montar dinamicamente o nome do arquivo de clientes a ser lido naquele dia (nome base + data de referência), e devolve o resultado via XCom |
+| 2 | `Limpa_Tabela_Temporaria` | Executa `TRUNCATE TABLE ttp_cliente`, limpando a tabela temporária antes de receber a nova carga |
+| 3 | `Ler_Arquivo_CSV_Clientes` | Recupera o nome do arquivo (via `xcom_pull`), lê o `.csv` com `pandas` (sem cabeçalho, separador `;`, codificação `latin1`) e monta dinamicamente as instruções `INSERT` para cada linha do arquivo |
+| 4 | `Inserir_Tabela_Temporaria_Clientes` | Executa no SQL Server os `INSERT`s gerados na task anterior, inserindo os dados na tabela temporária `ttp_cliente` |
 
-### 5. Coleta de Dados: 
-Armazenar o Nome e a Data do arquivo que sera lido para a carga de Detalhes do Clientes (Informações como Endereço, Valor Renda, Valor Patrimonio) entre outros.
+### Bloco 2 — Detalhes de Clientes
 
-### 6. Coleta de Dados: 
-Nesse etapa é realizada a limpeza da tabela temporaria que receberá todos os dados do arquivo de Detalhes Clientes.
-Essa tabela está preparada apenas para receber os dados do Modo que estiverem na origem.
+| # | Task | O que faz |
+| --- | --- | --- |
+| 5 | `Ler_Nome_Data_Arq_Detalhes_Cli` | Mesma lógica da task 1, mas para o arquivo de **detalhes** dos clientes (endereço, renda, patrimônio, etc.) |
+| 6 | `Limpar_Tabela_Temporaria_Detal_Cliente` | `TRUNCATE TABLE ttp_cliente_detalhe_generico`, limpando a tabela temporária de detalhes |
+| 7 | `Ler_Arquivo_CSV_Detal_Cliente` | Lê o `.csv` de detalhes (18 colunas: endereço, cidade, renda, patrimônio, data de nascimento, etc.) e monta os `INSERT`s correspondentes |
+| 8 | `Inserir_Tabela_Temporaria_Detal_Cliente` | Insere os dados de detalhes na tabela temporária `ttp_cliente_detalhe_generico` |
 
-### 7. Transferencia dos dados: 
-Nessa etapa é realizada a leitura dos dados de acordo com o nome definido na etapa 5.
+### Bloco 3 — Tratamento final
 
-### 8.  Transferencia dos dados: 
-Os dados são inseridos na tabela temporaria de Detalhes Clientes do banco de dados SQL Server.
+| # | Task | O que faz |
+| --- | --- | --- |
+| 9 | `executar_procedure` | Busca a data de referência em `tsv_server_status` e executa a procedure `dbo.spcl_carga_clientes`, que trata (formatação de datas, remoção de duplicidades, entre outros) e insere/atualiza os dados nas tabelas **definitivas** de Clientes e Detalhes de Clientes |
 
-### 9. Limpeza e Tratamento dos dados: 
-Nessa etapa é executada uma procedure que realiza o tratamento dos dados, como formatação de datas, limpeza de duplicidades entre outros.
-Após o tratameto os dados serão inseridos ou atualizadas nas tabelas definitivas de Clientes e Detalhes Clientes.
+> As duas tasks de leitura de CSV (`read_csv_file` e `read_csv_file_2`) montam os `INSERT`s concatenando os valores diretamente na string SQL — funciona para o volume do exemplo, mas vale considerar os cuidados listados em "Próximos passos" abaixo antes de levar isso para produção.
 
-### Abaixo estão a dag, os arquivos e a procedure que efetua as operações mencionadas acima.
+## Arquivos do repositório
 
-<div> 
-<p><a href="https://github.com/JosiTubaroski/Pipeline_Airflow/blob/main/Anexos/ETL_CLIENTES.py">01. Dag ETL CLIENTES </a></p>
-</div> 
+| Arquivo | Descrição |
+| --- | --- |
+| [`ETL_CLIENTES.py`](https://github.com/joycequoos/Pipeline_Airflow/blob/main/Anexos/ETL_CLIENTES.py) | Código completo da DAG `LOAD_CLIENTE`, com as 9 tasks descritas acima |
+| [`cliente_20231019.csv`](https://github.com/joycequoos/Pipeline_Airflow/blob/main/Anexos) | Arquivo de exemplo com os dados de clientes |
+| [`detalhe_cliente_20231019.csv`](https://github.com/joycequoos/Pipeline_Airflow/blob/main/Anexos) | Arquivo de exemplo com os detalhes dos clientes |
+| [`spcl_carga_clientes.sql`](https://github.com/joycequoos/Pipeline_Airflow/blob/main/Anexos/spcl_carga_clientes.sql) | Procedure responsável pelo tratamento e pela carga final nas tabelas definitivas |
 
-<div> 
-<p><a href="https://github.com/JosiTubaroski/Pipeline_Airflow/blob/main/Anexos">02. Arquivo CLIENTES (cliente_20231019.csv) </a></p>
-</div> 
+## Próximos passos
 
-<div> 
-<p><a href="https://github.com/JosiTubaroski/Pipeline_Airflow/blob/main/Anexos">03. Arquivo DETALHES CLIENTES (detalhe_cliente_20231019.csv) </a></p>
-</div> 
-
-<div> 
-<p><a href="https://github.com/JosiTubaroski/Pipeline_Airflow/blob/main/Anexos/spcl_carga_clientes.sql">04. Procedure para tratamento, inserção e edição dos dados.</a></p>
-</div>
-
-
+- Substituir a montagem manual de `INSERT` por parâmetros (`?` / `%s`) em vez de concatenação de string, para eliminar o risco de SQL Injection e problemas com aspas simples em nomes/endereços (hoje tratado com `.replace("'", ",")`, que altera o dado original).
+- Trocar o laço `for _, row in df.iterrows(): ...` por uma carga em lote (ex.: `executemany` ou Bulk Insert), já que inserir linha a linha via string concatenada não escala bem para arquivos grandes.
+- Adicionar tratamento de erro (`try/except` nas tasks Python, e `on_failure_callback` na DAG) para lidar com arquivo ausente ou colunas divergentes.
+- Parametrizar o caminho `dags/data/{file_name}.csv` e revisar se ele reflete a estrutura real de pastas do ambiente de produção.
